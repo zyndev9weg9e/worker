@@ -69,7 +69,13 @@ class DiscordBotController:
                 return
 
             command, *args = content.split(maxsplit=10)
-            reply = self.manager.handle_bot_command(command, args)
+            try:
+                reply = self.manager.handle_bot_command(command, args)
+            except Exception as e:
+                error_message = f"Command failed: {type(e).__name__}: {e}"
+                print(error_message)
+                await message.reply(error_message)
+                return
             await message.reply(reply)
 
         self.thread = threading.Thread(target=lambda: self.client.run(self.bot_token), daemon=True)
@@ -581,7 +587,7 @@ class DiscordAccountManager:
         """Process commands issued from the Discord bot."""
         cmd = (command or "").lower()
         if cmd in ["help", "?", "h"]:
-            return "Commands: !status, !start, !stop, !restart, !addtoken <token>, !removetoken <token|user#1234>, !select all|1,2, !setstatus online|idle|dnd|invisible, !setpresence playing name [state] [details], !setbio text, !setdisplay name, !join invite, !refresh"
+            return "Commands: !status, !start, !stop, !restart, !addtoken <token>, !removetoken <token|user#1234>, !select all|1,2, !setstatus online|idle|dnd|invisible, !setpresence online|idle|dnd|invisible, !setbio text, !setdisplay name, !join invite, !refresh"
 
         if cmd == "status":
             return self.get_accounts_summary()
@@ -613,14 +619,13 @@ class DiscordAccountManager:
             return message
 
         if cmd == "setpresence":
-            if len(args) < 2:
-                return "Usage: !setpresence <type> <name> [state] [details]"
+            if len(args) < 1:
+                return "Usage: !setpresence <status>"
             target_ids = self.selected_accounts or list(self.accounts.keys())
-            activity_type = args[0]
-            activity_name = args[1]
-            state = args[2] if len(args) > 2 else ""
-            details = " ".join(args[3:]) if len(args) > 3 else ""
-            count = self.set_presence_for_accounts(target_ids, activity_type, activity_name, state, details)
+            status = args[0].lower()
+            if status not in self.status_types:
+                return f"Invalid presence type. Use: {', '.join(self.status_types)}"
+            count = self.set_status_for_accounts(target_ids, status)
             return f"Updated presence for {count} account(s)."
 
         if cmd == "select":
