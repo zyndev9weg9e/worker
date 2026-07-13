@@ -89,6 +89,7 @@ class DiscordAccountManager:
         self.accounts = {}
         self.running = True
         self.lock = threading.Lock()
+        
         self.heartbeat_threads = []
         self.selected_accounts = []
         self.bot_controller = DiscordBotController(self)
@@ -139,6 +140,13 @@ class DiscordAccountManager:
             "Content-Type": "application/json",
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         }
+
+    def _find_account_by_token(self, token):
+        with self.lock:
+            for acc_id, data in self.accounts.items():
+                if data.get("token") == token:
+                    return acc_id, data
+        return None, None
     
     def get_user_info(self, token):
         """Fetch user info from token"""
@@ -163,7 +171,7 @@ class DiscordAccountManager:
             "afk": False,
             "since": 0
         }
-        
+
         if activity:
             payload["activities"] = [{
                 "name": activity.get("name", ""),
@@ -174,17 +182,60 @@ class DiscordAccountManager:
             }]
         else:
             payload["activities"] = []
-        
-        try:
-            resp = requests.patch(
-                "https://discord.com/api/v10/users/@me/settings",
-                headers=self.get_headers(token),
-                json=payload,
-                timeout=10
-            )
-            return resp.status_code in [200, 204]
-        except Exception as e:
-            return False
+
+        # retries with basic backoff and rate-limit handling
+        attempts = 0
+        max_attempts = 3
+        backoff = 1.0
+        last_error = None
+        while attempts < max_attempts:
+            attempts += 1
+            try:
+                resp = requests.patch(
+                    "https://discord.com/api/v10/users/@me/settings",
+                    headers=self.get_headers(token),
+                    json=payload,
+                    timeout=10
+                )
+
+                # attach response details to account for debugging
+                acc_id, acc = self._find_account_by_token(token)
+                if acc is not None:
+                    with self.lock:
+                        acc["last_response_code"] = resp.status_code
+                        try:
+                            acc["last_response_text"] = resp.text
+                        except Exception:
+                            acc["last_response_text"] = ""
+
+                if resp.status_code in [200, 204]:
+                    return True
+
+                if resp.status_code == 429:
+                    try:
+                        retry_after = float(resp.headers.get("Retry-After", backoff))
+                    except Exception:
+                        retry_after = backoff
+                    time.sleep(retry_after)
+                    backoff *= 2
+                    last_error = f"rate_limited_{retry_after}"
+                    continue
+
+                last_error = f"status_{resp.status_code}"
+                time.sleep(backoff)
+                backoff *= 2
+            except requests.RequestException as e:
+                last_error = str(e)
+                time.sleep(backoff)
+                backoff *= 2
+
+        # final failure: mark account error
+        acc_id, acc = self._find_account_by_token(token)
+        if acc is not None:
+            with self.lock:
+                acc["last_error"] = last_error
+                acc["online"] = False
+        return False
     
     def set_avatar(self, token, avatar_data):
         """Set user avatar"""
@@ -259,11 +310,32 @@ class DiscordAccountManager:
             if account:
                 stop_event = account.get("stop_event")
 
+        failure_count = 0
         while self.running and (stop_event is None or not stop_event.is_set()):
             try:
-                self.set_presence(token, "online")
-                time.sleep(60)
-            except Exception:
+                ok = self.set_presence(token, "online")
+                if ok:
+                    failure_count = 0
+                    with self.lock:
+                        if account:
+                            account["online"] = True
+                            account.pop("last_error", None)
+                else:
+                    failure_count += 1
+                    with self.lock:
+                        if account:
+                            account["online"] = False
+                # adaptive sleep: shorter on success, longer on repeated failures
+                if failure_count == 0:
+                    time.sleep(60)
+                else:
+                    time.sleep(min(60 * (failure_count + 1), 300))
+            except Exception as e:
+                failure_count += 1
+                with self.lock:
+                    if account:
+                        account["last_error"] = str(e)
+                        account["online"] = False
                 time.sleep(5)
     
     def start_account(self, token):
