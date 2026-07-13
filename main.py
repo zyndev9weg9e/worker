@@ -47,7 +47,7 @@ class DiscordBotController:
 
         @self.client.event
         async def on_ready():
-            print("[+] Discord bot connected")
+            print(f"[+] Discord bot connected as {self.client.user}")
             channel = self.client.get_channel(int(self.control_channel_id))
             if channel is not None:
                 await channel.send("✅ Proxify worker connected. Use !help for commands.")
@@ -603,13 +603,12 @@ class DiscordAccountManager:
         print("     " + "="*70)
         print(f"\n[+] Tokens loaded: {len(self.tokens)}")
         
-        if not self.tokens:
-            print("[-] No tokens loaded. Exiting.")
-            return
-        
-        print("[+] Starting accounts...")
-        self.start_all_accounts()
-        print(f"[+] Accounts active: {len(self.accounts)}")
+        if self.tokens:
+            print("[+] Starting accounts...")
+            self.start_all_accounts()
+            print(f"[+] Accounts active: {len(self.accounts)}")
+        else:
+            print("[-] No tokens loaded. Waiting for !addtoken commands via Discord bot or local input.")
 
         if self.bot_controller.is_configured():
             self.bot_controller.start()
