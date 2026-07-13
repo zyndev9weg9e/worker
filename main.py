@@ -247,11 +247,17 @@ class DiscordAccountManager:
     
     def heartbeat_loop(self, token, account_id):
         """Keep account alive with periodic status updates"""
-        while self.running:
+        stop_event = None
+        with self.lock:
+            account = self.accounts.get(account_id)
+            if account:
+                stop_event = account.get("stop_event")
+
+        while self.running and (stop_event is None or not stop_event.is_set()):
             try:
                 self.set_presence(token, "online")
                 time.sleep(60)
-            except Exception as e:
+            except Exception:
                 time.sleep(5)
     
     def start_account(self, token):
@@ -261,8 +267,13 @@ class DiscordAccountManager:
             account_id = user_info.get("id")
             username = user_info.get("username")
             discriminator = user_info.get("discriminator", "0000")
-            
+
             with self.lock:
+                if account_id in self.accounts:
+                    print(f"[-] Account already started: {username}#{discriminator}")
+                    return False
+
+                stop_event = threading.Event()
                 self.accounts[account_id] = {
                     "token": token,
                     "username": username,
@@ -273,7 +284,8 @@ class DiscordAccountManager:
                     "bio": "",
                     "avatar": user_info.get("avatar"),
                     "online": True,
-                    "thread": None
+                    "thread": None,
+                    "stop_event": stop_event
                 }
             
             thread = threading.Thread(target=self.heartbeat_loop, args=(token, account_id), daemon=True)
@@ -298,7 +310,61 @@ class DiscordAccountManager:
         """Stop all active accounts"""
         self.running = False
         print("[+] Stopping all accounts...")
+        with self.lock:
+            for data in self.accounts.values():
+                stop_event = data.get("stop_event")
+                if stop_event is not None:
+                    stop_event.set()
     
+    def restart_all_accounts(self):
+        """Restart all account heartbeats"""
+        print("[+] Restarting all accounts...")
+        self.stop_all_accounts()
+        time.sleep(1)
+        with self.lock:
+            self.accounts = {}
+        self.running = True
+        started = self.start_all_accounts()
+        return started
+
+    def remove_token(self, identifier):
+        """Remove a token by exact token or username#discriminator"""
+        identifier = identifier.strip()
+        if not identifier:
+            return False, "Usage: !removetoken <token|username#discriminator>"
+
+        matched_token = None
+        matched_acc_id = None
+
+        with self.lock:
+            for acc_id, data in self.accounts.items():
+                username_tag = f"{data['username']}#{data['discriminator']}"
+                if identifier == data['token'] or identifier.lower() == username_tag.lower():
+                    matched_token = data['token']
+                    matched_acc_id = acc_id
+                    break
+
+        if matched_token is None:
+            if identifier in self.tokens:
+                matched_token = identifier
+
+        if matched_token is None:
+            return False, "Token or account not found."
+
+        if matched_token in self.tokens:
+            self.tokens.remove(matched_token)
+            self.save_tokens()
+
+        if matched_acc_id is not None:
+            with self.lock:
+                account = self.accounts.pop(matched_acc_id, None)
+            if account is not None:
+                stop_event = account.get("stop_event")
+                if stop_event is not None:
+                    stop_event.set()
+
+        return True, "Token removed and account stopped."
+
     def list_accounts(self):
         """Display all active accounts with status"""
         with self.lock:
@@ -515,7 +581,7 @@ class DiscordAccountManager:
         """Process commands issued from the Discord bot."""
         cmd = (command or "").lower()
         if cmd in ["help", "?", "h"]:
-            return "Commands: !status, !start, !stop, !addtoken <token>, !select all|1,2, !setstatus online|idle|dnd|invisible, !setbio text, !setdisplay name, !join invite, !refresh"
+            return "Commands: !status, !start, !stop, !restart, !addtoken <token>, !removetoken <token|user#1234>, !select all|1,2, !setstatus online|idle|dnd|invisible, !setpresence playing name [state] [details], !setbio text, !setdisplay name, !join invite, !refresh"
 
         if cmd == "status":
             return self.get_accounts_summary()
@@ -529,12 +595,33 @@ class DiscordAccountManager:
             self.stop_all_accounts()
             return "Stopped account heartbeat loop."
 
+        if cmd == "restart":
+            started = self.restart_all_accounts()
+            return f"Restarted accounts. Active: {started}"
+
         if cmd == "addtoken":
             if not args:
                 return "Usage: !addtoken <token>"
             token = args[0]
             success, message = self.add_token(token)
             return message
+
+        if cmd == "removetoken":
+            if not args:
+                return "Usage: !removetoken <token|username#discriminator>"
+            success, message = self.remove_token(" ".join(args))
+            return message
+
+        if cmd == "setpresence":
+            if len(args) < 2:
+                return "Usage: !setpresence <type> <name> [state] [details]"
+            target_ids = self.selected_accounts or list(self.accounts.keys())
+            activity_type = args[0]
+            activity_name = args[1]
+            state = args[2] if len(args) > 2 else ""
+            details = " ".join(args[3:]) if len(args) > 3 else ""
+            count = self.set_presence_for_accounts(target_ids, activity_type, activity_name, state, details)
+            return f"Updated presence for {count} account(s)."
 
         if cmd == "select":
             if not args:
