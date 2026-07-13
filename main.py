@@ -86,6 +86,8 @@ class DiscordAccountManager:
         self.heartbeat_threads = []
         self.selected_accounts = []
         self.bot_controller = DiscordBotController(self)
+        self.token_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tokens.txt")
+        self.cwd_token_file = os.path.join(os.getcwd(), "tokens.txt")
         
         self.status_types = ["online", "idle", "dnd", "invisible"]
         self.activity_types = ["playing", "streaming", "listening", "watching", "competing"]
@@ -97,17 +99,18 @@ class DiscordAccountManager:
         """Load Discord bot tokens from tokens.txt"""
         try:
             self.tokens = []
-            if not os.path.exists("tokens.txt"):
-                print("[-] tokens.txt not found - create with one token per line")
+            token_path = self.token_file if os.path.exists(self.token_file) else self.cwd_token_file
+            if not os.path.exists(token_path):
+                print(f"[-] tokens.txt not found at {self.token_file} or current working directory")
                 return
             
-            with open("tokens.txt", "r") as f:
+            with open(token_path, "r") as f:
                 for line in f:
                     token = line.strip()
                     if token and not token.startswith("#"):
                         if token not in self.tokens:
                             self.tokens.append(token)
-            print(f"[+] Loaded {len(self.tokens)} tokens")
+            print(f"[+] Loaded {len(self.tokens)} tokens from {token_path}")
         except Exception as e:
             print(f"[-] Error loading tokens: {e}")
             self.tokens = []
@@ -115,10 +118,11 @@ class DiscordAccountManager:
     def save_tokens(self):
         """Save tokens back to file"""
         try:
-            with open("tokens.txt", "w") as f:
+            token_path = self.token_file if os.path.exists(self.token_file) else self.cwd_token_file
+            with open(token_path, "w") as f:
                 for token in self.tokens:
                     f.write(token + "\n")
-            print("[+] Tokens saved")
+            print(f"[+] Tokens saved to {token_path}")
         except Exception as e:
             print(f"[-] Error saving tokens: {e}")
     
@@ -490,9 +494,22 @@ class DiscordAccountManager:
         if token in self.tokens:
             return False, "Token already exists."
 
+        # Validate token before saving
+        user_info = self.get_user_info(token)
+        if not user_info:
+            return False, "Invalid token or failed validation."
+
         self.tokens.append(token)
         self.save_tokens()
-        return True, "Token added and saved."
+
+        if not self.running:
+            self.running = True
+
+        started = self.start_account(token)
+        if not started:
+            return False, "Token saved but failed to start the account."
+
+        return True, f"Token added, saved, and started as {user_info.get('username')}#{user_info.get('discriminator', '0000')}"
 
     def handle_bot_command(self, command, args):
         """Process commands issued from the Discord bot."""
