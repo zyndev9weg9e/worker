@@ -96,16 +96,17 @@ class DiscordAccountManager:
     def load_tokens(self):
         """Load Discord bot tokens from tokens.txt"""
         try:
+            self.tokens = []
             if not os.path.exists("tokens.txt"):
                 print("[-] tokens.txt not found - create with one token per line")
-                self.tokens = []
                 return
             
             with open("tokens.txt", "r") as f:
                 for line in f:
                     token = line.strip()
                     if token and not token.startswith("#"):
-                        self.tokens.append(token)
+                        if token not in self.tokens:
+                            self.tokens.append(token)
             print(f"[+] Loaded {len(self.tokens)} tokens")
         except Exception as e:
             print(f"[-] Error loading tokens: {e}")
@@ -481,11 +482,23 @@ class DiscordAccountManager:
                 lines.append(f"... and {len(self.accounts) - 10} more")
             return "\n".join(lines)
 
+    def add_token(self, token):
+        """Add a token to the manager and save it."""
+        token = token.strip()
+        if not token:
+            return False, "Token cannot be empty."
+        if token in self.tokens:
+            return False, "Token already exists."
+
+        self.tokens.append(token)
+        self.save_tokens()
+        return True, "Token added and saved."
+
     def handle_bot_command(self, command, args):
         """Process commands issued from the Discord bot."""
         cmd = (command or "").lower()
         if cmd in ["help", "?", "h"]:
-            return "Commands: !status, !start, !stop, !select all|1,2, !setstatus online|idle|dnd|invisible, !setbio text, !setdisplay name, !join invite, !refresh"
+            return "Commands: !status, !start, !stop, !addtoken <token>, !select all|1,2, !setstatus online|idle|dnd|invisible, !setbio text, !setdisplay name, !join invite, !refresh"
 
         if cmd == "status":
             return self.get_accounts_summary()
@@ -498,6 +511,13 @@ class DiscordAccountManager:
         if cmd == "stop":
             self.stop_all_accounts()
             return "Stopped account heartbeat loop."
+
+        if cmd == "addtoken":
+            if not args:
+                return "Usage: !addtoken <token>"
+            token = args[0]
+            success, message = self.add_token(token)
+            return message
 
         if cmd == "select":
             if not args:
